@@ -1,0 +1,61 @@
+{
+  "server_name": "Coding & Developer Hub",
+  "roles": [
+    {"name": "Owner", "color": "#E74C3C", "permissions": ["Administrator"]},
+    {"name": "Admin", "color": "#C0392B"},
+    {"name": "Moderator", "color": "#E67E22"},
+    {"name": "Lead Developer", "color": "#9B59B6"},
+    {"name": "Senior Dev", "color": "#8E44AD"},
+    {"name": "Junior Dev", "color": "#2980B9"},
+    {"name": "UI/UX Designer", "color": "#1ABC9C"},
+    {"name": "AI & ML Specialist", "color": "#F1C40F"},
+    {"name": "DevOps Engineer", "color": "#D35400"},
+    {"name": "Open Source Contributor", "color": "#2ECC71"},
+    {"name": "Code Mentor", "color": "#3498DB"},
+    {"name": "Bug Hunter", "color": "#E91E63"},
+    {"name": "Member", "color": "#95A5A6"},
+    {"name": "Server Booster", "color": "#FF73FA"}
+  ],
+  "categories": [
+    {
+      "name": "WELCOME & INFORMATION",
+      "emoji": "👋",
+      "channels": [
+        {"name": "welcome", "type": "text", "topic": "Welcome to the server! Read the guidelines.", "emoji": "👋"},
+        {"name": "rules", "type": "text", "topic": "Official server rules and regulations.", "emoji": "📜"},
+        {"name": "announcements", "type": "text", "topic": "Developer news and server updates.", "emoji": "📢"},
+        {"name": "roles-select", "type": "text", "topic": "Get your tech stack roles here.", "emoji": "🎭"}
+      ]
+    },
+    {
+      "name": "COMMUNITY SQUARE",
+      "emoji": "💬",
+      "channels": [
+        {"name": "general-chat", "type": "text", "topic": "Main developer discussion area.", "emoji": "💬"},
+        {"name": "introductions", "type": "text", "topic": "Introduce yourself to the community!", "emoji": "🙋"},
+        {"name": "showcase", "type": "text", "topic": "Share your projects, apps, and code repos.", "emoji": "🚀"},
+        {"name": "tech-news", "type": "text", "topic": "Discussion about the latest tech updates.", "emoji": "📰"}
+      ]
+    },
+    {
+      "name": "PROGRAMMING LANGUAGES",
+      "emoji": "💻",
+      "channels": [
+        {"name": "python", "type": "text", "topic": "Python discussions, asyncio, and frameworks.", "emoji": "🐍"},
+        {"name": "javascript-ts", "type": "text", "topic": "JS, TypeScript, Node.js, and React.", "emoji": "⚡"},
+        {"name": "rust-cpp", "type": "text", "topic": "Systems programming in Rust & C++.", "emoji": "⚙️"},
+        {"name": "golang", "type": "text", "topic": "Go language topics and backend architecture.", "emoji": "🐹"}
+      ]
+    },
+    {
+      "name": "VOICE LOUNGES",
+      "emoji": "🔊",
+      "channels": [
+        {"name": "General Lounge", "type": "voice", "emoji": "☕"},
+        {"name": "Pair Programming 1", "type": "voice", "emoji": "🎧"},
+        {"name": "Pair Programming 2", "type": "voice", "emoji": "🎧"},
+        {"name": "Quiet Work Room", "type": "voice", "emoji": "🤫"}
+      ]
+    }
+  ]
+}
