@@ -1,262 +1,694 @@
 import discord
-from discord.ext import commands
-from discord import app_commands, Interaction
+from discord.ext import commands, tasks
+from discord import app_commands, Interaction, ui
 import json
 import asyncio
-from openai import OpenAI
-from config import OPENAI_API_KEY
-from prompt import SYSTEM_PROMPT
-from database import Database
+import random
+import re
+import os
+import aiohttp
+from datetime import datetime
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+PREFIX = "*"
+CONFIG_FILE = "sniper_config.json"
+BACKUP_FILE = "server_backups.json"
 
-class ServerRefineModal(discord.ui.Modal, title="Refine Server Prompt"):
-    prompt_input = discord.ui.TextInput(
-        label="Describe adjustments or changes",
-        style=discord.TextStyle.paragraph,
-        placeholder="e.g. Add 3 voice rooms for gaming and a cybersecurity category...",
-        required=True,
-        max_length=1500
-    )
-
-    def __init__(self, cog, original_prompt: str):
-        super().__init__()
-        self.cog = cog
-        self.original_prompt = original_prompt
-
-    async def on_submit(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True)
-        new_prompt = f"{self.original_prompt}. Adjustments: {self.prompt_input.value}"
-        await self.cog.generate_and_preview(interaction, new_prompt)
+# SLEEK GRAPHITE GREY EMBED COLOR (#595b5c)
+DARK_EMBED_COLOR = discord.Color.from_str("#595b5c")
 
 
-class TemplateModal(discord.ui.Modal, title="Flex Server Architect"):
-    prompt_input = discord.ui.TextInput(
-        label="What should your server look like?",
-        style=discord.TextStyle.paragraph,
-        placeholder="Describe your dream Discord server in detail (e.g. Valorant esports hub with team channels)...",
-        required=True,
-        max_length=1500
-    )
-
-    def __init__(self, cog):
-        super().__init__()
-        self.cog = cog
-
-    async def on_submit(self, interaction: Interaction):
-        await interaction.response.defer(ephemeral=True)
-        user_prompt = self.prompt_input.value
-        await self.cog.generate_and_preview(interaction, user_prompt)
+def load_json(filename):
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
 
 
-class CategorySelect(discord.ui.Select):
-    def __init__(self, categories):
-        options = []
-        for idx, cat in enumerate(categories[:25]):
-            options.append(discord.SelectOption(
-                label=cat.get("name", f"Category {idx+1}")[:100],
-                value=str(idx),
-                emoji=cat.get("emoji", "📁")
-            ))
-        super().__init__(placeholder="Inspect channels in a category...", min_values=1, max_values=1, options=options)
-        self.categories = categories
+def save_json(filename, data):
+    try:
+        with open(filename, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Failed to save {filename}: {e}")
 
-    async def callback(self, interaction: Interaction):
-        idx = int(self.values[0])
-        selected_cat = self.categories[idx]
+
+def parse_time(time_str: str) -> int:
+    match = re.match(r"^(\d+)([smh])$", time_str.lower())
+    if not match:
+        return 0
+    val, unit = int(match.group(1)), match.group(2)
+    if unit == "s":
+        return val
+    elif unit == "m":
+        return val * 60
+    elif unit == "h":
+        return val * 3600
+    return 0
+
+
+# --- TICKET INTERACTIVE VIEW (CLOSE & CLAIM) ---
+class TicketActionView(ui.View):
+    def __init__(self, cog_instance, creator_id: int, open_time_str: str, panel_name: str):
+        super().__init__(timeout=None)
+        self.cog = cog_instance
+        self.creator_id = creator_id
+        self.open_time_str = open_time_str
+        self.panel_name = panel_name
+
+    @ui.button(label="Close", style=discord.ButtonStyle.danger, custom_id="ticket_close_btn", emoji="🔒")
+    async def close_ticket(self, interaction: Interaction, button: ui.Button):
+        guild = interaction.guild
+        channel = interaction.channel
+        closed_by = interaction.user
+        close_time_str = datetime.now().strftime("%B %d, %Y at %I:%M %p")
+
+        await interaction.response.send_message("🔒 Closing ticket and sending transcript...", ephemeral=True)
+
+        try:
+            creator = guild.get_member(self.creator_id) or await guild.fetch_member(self.creator_id)
+            if creator:
+                dm_embed = discord.Embed(
+                    title="Ticket Closed",
+                    description=f"Your ticket has been closed in **{guild.name}**!",
+                    color=DARK_EMBED_COLOR
+                )
+                dm_embed.add_field(
+                    name="Ticket Information",
+                    value=f"• **Open Date:** {self.open_time_str}\n• **Panel Name:** {self.panel_name}\n• **Ticket Name:** {channel.name}",
+                    inline=False
+                )
+                dm_embed.add_field(
+                    name="Close Information",
+                    value=f"• **Closed By:** {closed_by.mention}\n• **Close Date:** {close_time_str}\n• **Close Reason:** No further action required.",
+                    inline=False
+                )
+                dm_embed.set_footer(text="Flex AI • Ticketing System")
+                await creator.send(embed=dm_embed)
+        except Exception as e:
+            print(f"Could not send close DM: {e}")
+
+        await asyncio.sleep(3)
+        try:
+            await channel.delete()
+        except Exception:
+            pass
+
+    @ui.button(label="Claim", style=discord.ButtonStyle.success, custom_id="ticket_claim_btn", emoji="🙌")
+    async def claim_ticket(self, interaction: Interaction, button: ui.Button):
+        button.disabled = True
+        button.label = f"Claimed by {interaction.user.display_name}"
+        await interaction.response.edit_message(view=self)
+        await interaction.channel.send(f"🙌 Ticket claimed by {interaction.user.mention}!")
+
+
+# --- TICKET PANEL INTERACTIVE VIEW ---
+class TicketPanelView(ui.View):
+    def __init__(self, cog_instance, panel_name="General Support"):
+        super().__init__(timeout=None)
+        self.cog = cog_instance
+        self.panel_name = panel_name
+
+    @ui.button(label="Create Ticket", style=discord.ButtonStyle.secondary, custom_id="create_ticket_panel")
+    async def create_ticket(self, interaction: Interaction, button: ui.Button):
+        await self.cog.spawn_ticket(interaction.guild, interaction.user, interaction, panel_name=self.panel_name)
+
+
+# --- GIVEAWAY JOIN VIEW ---
+class GiveawayJoinView(ui.View):
+    def __init__(self, cog_instance, giveaway_id):
+        super().__init__(timeout=None)
+        self.cog = cog_instance
+        self.giveaway_id = giveaway_id
+
+    @ui.button(label="🎉 Enter Giveaway", style=discord.ButtonStyle.success, custom_id="join_giveaway_btn")
+    async def join_giveaway(self, interaction: Interaction, button: ui.Button):
+        success, msg = self.cog.add_giveaway_entry(self.giveaway_id, interaction.user)
+        if success:
+            await interaction.response.send_message("🎉 You have successfully entered the giveaway!", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⚠️ {msg}", ephemeral=True)
+
+
+class ServerBuilder(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.config_data = load_json(CONFIG_FILE)
+        self.backups = load_json(BACKUP_FILE)
+        self.active_giveaways = {}
+
+    def add_giveaway_entry(self, message_id, user: discord.Member):
+        if message_id in self.active_giveaways:
+            gw = self.active_giveaways[message_id]
+            req_role = gw.get("required_role")
+            if req_role and req_role not in user.roles:
+                return False, f"You must have the {req_role.mention} role to enter!"
+
+            if user.id not in gw["entries"]:
+                gw["entries"].append(user.id)
+                return True, "Success"
+            return False, "You are already entered in this giveaway!"
+        return False, "Giveaway not found."
+
+    async def spawn_ticket(self, guild: discord.Guild, user: discord.Member, interaction: Interaction = None, panel_name: str = "General Support", forced_by: discord.Member = None):
+        guild_id = str(guild.id)
+        g_conf = self.config_data.get(guild_id, {})
         
-        channels_text = ""
-        for ch in selected_cat.get("channels", []):
-            emoji = ch.get("emoji", "💬")
-            c_type = "🔊" if ch.get("type") == "voice" else "💬"
-            topic = f" - *{ch['topic']}*" if ch.get("topic") else ""
-            channels_text += f"{emoji} `{ch['name']}` ({c_type}){topic}\n"
+        ticket_count = g_conf.get("ticket_counter", 0) + 1
+        g_conf["ticket_counter"] = ticket_count
+        self.config_data[guild_id] = g_conf
+        save_json(CONFIG_FILE, self.config_data)
+
+        clean_name = re.sub(r'[^a-zA-Z0-9]', '', user.name.lower())
+        channel_name = f"ticket-{clean_name}-{ticket_count:03d}"
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            user: discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+        }
+
+        admin_role_id = g_conf.get("admin_role_id")
+        admin_role = guild.get_role(admin_role_id) if admin_role_id else None
+        if admin_role:
+            overwrites[admin_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, read_message_history=True)
+
+        category_id = g_conf.get("ticket_category_id")
+        category = guild.get_channel(category_id) if category_id else None
+
+        ticket_channel = await guild.create_text_channel(
+            name=channel_name,
+            category=category if isinstance(category, discord.CategoryChannel) else None,
+            overwrites=overwrites
+        )
+
+        open_time_str = datetime.now().strftime("%B %d, %Y at %I:%M %p")
+        ping_mentions = f"{user.mention}"
+        if admin_role:
+            ping_mentions = f"{admin_role.mention}, {user.mention}"
+
+        embed_main = discord.Embed(
+            title=f"🎫 Ticket #{ticket_count} opened",
+            description=f"Welcome, {user.mention}! A staff member will join shortly.\n\nFeel free to describe your issue in detail while you wait. The more context, the faster we can help.",
+            color=DARK_EMBED_COLOR
+        )
+        embed_main.set_footer(text="Flex AI")
+
+        view = TicketActionView(self, creator_id=user.id, open_time_str=open_time_str, panel_name=panel_name)
+        await ticket_channel.send(content=ping_mentions, embed=embed_main, view=view)
+
+        if forced_by:
+            embed_force = discord.Embed(
+                title="ℹ️ Force Ticket",
+                description=f"{forced_by.mention} created this ticket for {user.mention}.",
+                color=DARK_EMBED_COLOR
+            )
+            embed_force.set_footer(text=f"Flex AI • {panel_name}")
+            await ticket_channel.send(embed=embed_force)
+
+        if interaction:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"✅ Ticket created: {ticket_channel.mention}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"✅ Ticket created: {ticket_channel.mention}", ephemeral=True)
+
+    # --- SAY COMMAND WITH WEBHOOK URL & EMBED SUPPORT ---
+    @app_commands.command(name="say", description="Make the bot say a message (Supports Webhook URLs, embeds & channel)")
+    @app_commands.describe(
+        message="The message text for the bot to send",
+        channel="Optional target channel (ignored if webhook URL is provided)",
+        embed="Send as a styled embed (Default: False)",
+        webhook_url="Optional Discord Webhook URL to post through",
+        username="Custom username for the webhook message",
+        avatar_url="Custom avatar image URL for the webhook message"
+    )
+    async def say_command(
+        self,
+        interaction: Interaction,
+        message: str,
+        channel: discord.TextChannel = None,
+        embed: bool = False,
+        webhook_url: str = None,
+        username: str = None,
+        avatar_url: str = None
+    ):
+        try:
+            # 1. SEND VIA EXTERNAL WEBHOOK URL
+            if webhook_url:
+                payload = {}
+                if embed:
+                    payload["embeds"] = [{
+                        "description": message,
+                        "color": int("595b5c", 16)  # Hex #595b5c as integer
+                    }]
+                else:
+                    payload["content"] = message
+
+                if username:
+                    payload["username"] = username
+                if avatar_url:
+                    payload["avatar_url"] = avatar_url
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(webhook_url, json=payload) as resp:
+                        if resp.status in [200, 204]:
+                            await interaction.response.send_message("✅ Webhook message sent successfully!", ephemeral=True)
+                        else:
+                            text = await resp.text()
+                            await interaction.response.send_message(f"❌ Failed to send via webhook URL. Status `{resp.status}`: `{text}`", ephemeral=True)
+                return
+
+            # 2. STANDARD BOT MESSAGE / EMBED IN CHANNEL
+            target_channel = channel or interaction.channel
+            if embed:
+                emb = discord.Embed(description=message, color=DARK_EMBED_COLOR)
+                await target_channel.send(embed=emb)
+            else:
+                await target_channel.send(message)
+
+            await interaction.response.send_message(f"✅ Message sent in {target_channel.mention}!", ephemeral=True)
+
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Failed to send message: `{e}`", ephemeral=True)
+
+    # --- HONEYPOT GROUP COMMANDS ---
+    honeypot_group = app_commands.Group(name="honeypot", description="Configure honeypot security traps")
+
+    @honeypot_group.command(name="set", description="Set a channel as a trap and choose auto-punishment")
+    @app_commands.describe(
+        channel="The trap channel where typing results in a penalty",
+        action="Action to take against users who type in this channel"
+    )
+    @app_commands.choices(action=[
+        app_commands.Choice(name="Ban", value="ban"),
+        app_commands.Choice(name="Kick", value="kick"),
+        app_commands.Choice(name="Permanent Mute Role", value="mute"),
+        app_commands.Choice(name="Warn", value="warn")
+    ])
+    async def honeypot_set(self, interaction: Interaction, channel: discord.TextChannel, action: app_commands.Choice[str]):
+        guild_id = str(interaction.guild_id)
+        if guild_id not in self.config_data:
+            self.config_data[guild_id] = {}
+
+        self.config_data[guild_id]["honeypot_channel_id"] = channel.id
+        self.config_data[guild_id]["honeypot_action"] = action.value
+        save_json(CONFIG_FILE, self.config_data)
 
         embed = discord.Embed(
-            title=f"{selected_cat.get('emoji', '📁')} {selected_cat['name']}",
-            description=channels_text or "No channels in this category.",
-            color=discord.Color.blue()
+            title="🍯 Honeypot Trap Set",
+            description=f"**Channel:** {channel.mention}\n**Action:** `{action.name}`\n\nAny user who types in {channel.mention} will immediately trigger a `{action.value}` punishment!",
+            color=DARK_EMBED_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-class PreviewView(discord.ui.View):
-    def __init__(self, cog, layout_data: dict, prompt: str):
-        super().__init__(timeout=600)
-        self.cog = cog
-        self.layout_data = layout_data
-        self.prompt = prompt
-
-        categories = layout_data.get("categories", [])
-        if categories:
-            self.add_item(CategorySelect(categories))
-
-    @discord.ui.button(label="Create Server", style=discord.ButtonStyle.green, emoji="🚀")
-    async def create_server(self, interaction: Interaction, button: discord.ui.Button):
-        # Disable view buttons
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(view=self)
-
-        await self.cog.build_server_execution(interaction, self.layout_data)
-
-    @discord.ui.button(label="Refine Preview", style=discord.ButtonStyle.blurple, emoji="✏️")
-    async def refine_preview(self, interaction: Interaction, button: discord.ui.Button):
-        modal = ServerRefineModal(self.cog, self.prompt)
-        await interaction.response.send_modal(modal)
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.red, emoji="✖️")
-    async def cancel(self, interaction: Interaction, button: discord.ui.Button):
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(content="❌ Server creation cancelled.", embed=None, view=self)
-
-
-class ServerBuilderCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
-
-    @app_commands.command(name="template", description="Generate a custom Discord server structure using AI.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def template_command(self, interaction: Interaction):
-        user_id = interaction.user.id
-        can_use, count, reset_sec = await Database.check_and_increment_usage(user_id)
-
-        if not can_use:
-            hours = int(reset_sec // 3600)
-            minutes = int((reset_sec % 3600) // 60)
-            await interaction.response.send_message(
-                f"⚠️ You have reached your daily limit of 5 server builds! Reset in **{hours}h {minutes}m**.",
-                ephemeral=True
-            )
-            return
-
-        modal = TemplateModal(self)
-        await interaction.response.send_modal(modal)
-
-    @template_command.error
-    async def template_command_error(self, interaction: Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                "❌ You must have **Administrator** or **Manage Server** permissions to use `/template`.",
-                ephemeral=True
-            )
-
-    async def generate_and_preview(self, interaction: Interaction, prompt: str):
-        await interaction.followup.send("🤖 **Flex AI** is crafting your server layout... Please wait.", ephemeral=True)
-
-        try:
-            response = await asyncio.to_thread(
-                lambda: openai_client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": f"Generate a Discord server structure tailored strictly to this theme: {prompt}"}
-                    ],
-                    response_format={"type": "json_object"},
-                    temperature=0.7
-                )
-            )
-
-            raw_json = response.choices[0].message.content
-            layout = json.loads(raw_json)
-
-        except Exception as e:
-            await interaction.followup.send(f"❌ Failed to generate server design from AI: `{str(e)}`", ephemeral=True)
-            return
-
-        # Build Preview Embed
-        roles = layout.get("roles", [])
-        categories = layout.get("categories", [])
-        total_channels = sum(len(c.get("channels", [])) for c in categories)
+    @honeypot_group.command(name="disable", description="Disable the active honeypot trap for this server")
+    async def honeypot_disable(self, interaction: Interaction):
+        guild_id = str(interaction.guild_id)
+        if guild_id in self.config_data:
+            self.config_data[guild_id].pop("honeypot_channel_id", None)
+            self.config_data[guild_id].pop("honeypot_action", None)
+            save_json(CONFIG_FILE, self.config_data)
 
         embed = discord.Embed(
-            title=f"🏗️ Server Preview: {layout.get('server_name', 'Custom Server')}",
-            description=f"**Prompt:** *\"{prompt}\"*\n\nReview the AI-generated architecture below before applying it to this server.",
-            color=0x2B2D31
+            title="🍯 Honeypot Trap Disabled",
+            description="Honeypot protection has been turned off.",
+            color=DARK_EMBED_COLOR
         )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-        embed.add_field(
-            name="📊 Summary Statistics",
-            value=f"• **Roles:** {len(roles)}\n• **Categories:** {len(categories)}\n• **Total Channels:** {total_channels}",
-            inline=False
-        )
+    @honeypot_group.command(name="view", description="View current honeypot trap status")
+    async def honeypot_view(self, interaction: Interaction):
+        guild_id = str(interaction.guild_id)
+        conf = self.config_data.get(guild_id, {})
+        hp_id = conf.get("honeypot_channel_id")
+        hp_action = conf.get("honeypot_action")
 
-        sample_roles = ", ".join([f"`{r['name']}`" for r in roles[:6]])
-        if len(roles) > 6:
-            sample_roles += f" + {len(roles)-6} more"
-        embed.add_field(name="🎭 Roles Overview", value=sample_roles or "None", inline=False)
-
-        sample_cats = "\n".join([f"{c.get('emoji', '📁')} **{c['name']}** ({len(c.get('channels', []))} channels)" for c in categories[:5]])
-        if len(categories) > 5:
-            sample_cats += f"\n*+ {len(categories)-5} more categories*"
-        embed.add_field(name="📂 Category Structure", value=sample_cats or "None", inline=False)
-
-        embed.set_footer(text="Flex Server Architect • Use dropdown to inspect specific channels")
-
-        view = PreviewView(self, layout, prompt)
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-    async def build_server_execution(self, interaction: Interaction, layout: dict):
-        guild = interaction.guild
-        status_msg = await interaction.followup.send("⏳ Starting server building process...", ephemeral=True)
-
-        try:
-            # 1. Create Roles
-            await status_msg.edit(content="⏳ **Step 1/3:** Creating roles...")
-            created_roles = {}
-            roles_data = layout.get("roles", [])
-            for role_info in reversed(roles_data):  # Bottom to top hierarchy
-                name = role_info.get("name")
-                hex_color = role_info.get("color", "#999999").lstrip("#")
-                color = discord.Color(int(hex_color, 16)) if hex_color else discord.Color.default()
-                
-                perms = discord.Permissions.none()
-                if "Administrator" in role_info.get("permissions", []):
-                    perms = discord.Permissions(administrator=True)
-
-                role = await guild.create_role(name=name, color=color, permissions=perms)
-                created_roles[name] = role
-                await asyncio.sleep(0.4)  # Prevent Discord API rate limits
-
-            # 2. Create Categories & Channels
-            await status_msg.edit(content="⏳ **Step 2/3:** Creating categories and channels...")
-            categories_data = layout.get("categories", [])
-            
-            for cat_info in categories_data:
-                cat_emoji = cat_info.get("emoji", "")
-                cat_name = f"{cat_emoji} {cat_info['name']}".strip()
-                category = await guild.create_category(cat_name)
-
-                for chan_info in cat_info.get("channels", []):
-                    chan_emoji = chan_info.get("emoji", "")
-                    chan_name = f"{chan_emoji}-{chan_info['name']}".strip() if chan_emoji else chan_info['name']
-                    topic = chan_info.get("topic", None)
-
-                    if chan_info.get("type") == "voice":
-                        await guild.create_voice_channel(chan_name, category=category)
-                    else:
-                        await guild.create_text_channel(chan_name, category=category, topic=topic)
-
-                    await asyncio.sleep(0.4)
-
-            # 3. Finalize
-            total_channels = sum(len(c.get("channels", [])) for c in categories_data)
-            complete_embed = discord.Embed(
-                title="✅ Server Setup Complete!",
-                description=f"Flex successfully created the server architecture according to your specifications.",
-                color=discord.Color.green()
+        if hp_id and hp_action:
+            channel = interaction.guild.get_channel(hp_id)
+            ch_str = channel.mention if channel else f"ID: `{hp_id}`"
+            embed = discord.Embed(
+                title="🍯 Active Honeypot Trap",
+                description=f"**Channel:** {ch_str}\n**Action:** `{hp_action.upper()}`",
+                color=DARK_EMBED_COLOR
             )
-            complete_embed.add_field(name="Roles Created", value=str(len(roles_data)), inline=True)
-            complete_embed.add_field(name="Categories Created", value=str(len(categories_data)), inline=True)
-            complete_embed.add_field(name="Channels Created", value=str(total_channels), inline=True)
+        else:
+            embed = discord.Embed(
+                title="🍯 Honeypot Status",
+                description="No honeypot trap is currently active.",
+                color=DARK_EMBED_COLOR
+            )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-            await status_msg.edit(content="", embed=complete_embed)
+    @app_commands.command(name="memorize", description="Snapshot server channels & categories for anti-nuke restoration")
+    async def memorize(self, interaction: Interaction):
+        guild = interaction.guild
+        guild_id = str(guild.id)
 
-        except discord.Forbidden:
-            await status_msg.edit(content="❌ **Error:** Flex lacks the necessary permissions (Manage Roles / Manage Channels) to build this server.")
-        except Exception as e:
-            await status_msg.edit(content=f"❌ **An unexpected error occurred during creation:** `{str(e)}`")
+        categories_data = []
+        for category in guild.categories:
+            channels_data = []
+            for ch in category.channels:
+                channels_data.append({
+                    "name": ch.name,
+                    "type": "voice" if isinstance(ch, discord.VoiceChannel) else "text",
+                    "topic": getattr(ch, "topic", None)
+                })
+            categories_data.append({
+                "name": category.name,
+                "channels": channels_data
+            })
+
+        self.backups[guild_id] = categories_data
+        save_json(BACKUP_FILE, self.backups)
+
+        embed = discord.Embed(
+            title="🛡️ Server State Memorized",
+            description="All categories and channels have been successfully backed up for Anti-Nuke recovery!",
+            color=DARK_EMBED_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="adminrole", description="Set the staff/admin role to be pinged in tickets")
+    @app_commands.describe(role="The admin/staff role to ping")
+    async def adminrole(self, interaction: Interaction, role: discord.Role):
+        guild_id = str(interaction.guild_id)
+        if guild_id not in self.config_data:
+            self.config_data[guild_id] = {}
+        
+        self.config_data[guild_id]["admin_role_id"] = role.id
+        save_json(CONFIG_FILE, self.config_data)
+
+        embed = discord.Embed(
+            title="🛡️ Admin Role Configured",
+            description=f"Tickets will now ping {role.mention}",
+            color=DARK_EMBED_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="setup", description="Deploy interactive ticket panel in a channel")
+    @app_commands.describe(channel="Channel to deploy the ticket panel in")
+    async def setup_ticket(self, interaction: Interaction, channel: discord.TextChannel):
+        guild_id = str(interaction.guild_id)
+        if guild_id not in self.config_data:
+            self.config_data[guild_id] = {}
+        self.config_data[guild_id]["ticket_category_id"] = channel.category_id
+
+        embed = discord.Embed(
+            description="Click the button below to create a ticket",
+            color=DARK_EMBED_COLOR
+        )
+
+        await channel.send(embed=embed, view=TicketPanelView(self))
+        await interaction.response.send_message(f"✅ Ticket panel deployed successfully in {channel.mention}!", ephemeral=True)
+
+    @app_commands.command(name="force", description="Force create a ticket for a specific user")
+    @app_commands.describe(user="The user to create a ticket for")
+    async def force_ticket(self, interaction: Interaction, user: discord.Member):
+        await self.spawn_ticket(interaction.guild, user, interaction, forced_by=interaction.user)
+
+    giveaway_group = app_commands.Group(name="giveaway", description="Manage community giveaways")
+
+    @giveaway_group.command(name="create", description="Create a giveaway with full custom options")
+    @app_commands.describe(
+        duration="Duration (e.g. 30s, 15m, 2h)",
+        winners="Number of winners",
+        prize="Prize description",
+        host="Host user for the giveaway",
+        required_roles="Role required to join",
+        image="Image URL to show in giveaway embed",
+        thumbnail="Thumbnail URL to show in embed",
+        color="Hex color code (e.g. #111111)"
+    )
+    async def giveaway_create(
+        self,
+        interaction: Interaction,
+        duration: str,
+        winners: int,
+        prize: str,
+        host: discord.Member = None,
+        required_roles: discord.Role = None,
+        image: str = None,
+        thumbnail: str = None,
+        color: str = None
+    ):
+        seconds = parse_time(duration)
+        if seconds <= 0:
+            await interaction.response.send_message("❌ Invalid duration format! Use `30s`, `10m`, or `2h`.", ephemeral=True)
+            return
+
+        embed_color = DARK_EMBED_COLOR
+        if color:
+            try:
+                embed_color = discord.Color.from_str(color)
+            except ValueError:
+                pass
+
+        host_user = host or interaction.user
+
+        embed = discord.Embed(
+            title="🎉 GIVEAWAY TIME! 🎉",
+            description=(
+                f"**Prize:** {prize}\n"
+                f"**Winners:** {winners}\n"
+                f"**Duration:** {duration}\n"
+                f"**Host:** {host_user.mention}\n"
+            ),
+            color=embed_color
+        )
+
+        if required_roles:
+            embed.description += f"**Required Role:** {required_roles.mention}\n"
+
+        embed.description += "\nClick the button below to enter!"
+        
+        if image:
+            embed.set_image(url=image)
+        if thumbnail:
+            embed.set_thumbnail(url=thumbnail)
+
+        embed.set_footer(text=f"Hosted by {host_user.display_name}")
+
+        await interaction.response.send_message("🎉 Giveaway created successfully!", ephemeral=True)
+        msg = await interaction.channel.send(embed=embed, view=GiveawayJoinView(self, str(interaction.id)))
+
+        self.active_giveaways[str(msg.id)] = {
+            "prize": prize,
+            "winners": winners,
+            "entries": [],
+            "channel_id": interaction.channel_id,
+            "host": host_user.id,
+            "required_role": required_roles
+        }
+
+        await asyncio.sleep(seconds)
+
+        data = self.active_giveaways.get(str(msg.id))
+        if data:
+            entries = data["entries"]
+            if entries:
+                chosen = random.sample(entries, min(winners, len(entries)))
+                mentions = ", ".join([f"<@{uid}>" for uid in chosen])
+                await interaction.channel.send(f"🎊 **GIVEAWAY ENDED!** Winner(s) of **{prize}**: {mentions}!")
+            else:
+                await interaction.channel.send(f"❌ Giveaway for **{prize}** ended with no valid entries.")
+            self.active_giveaways.pop(str(msg.id), None)
+
+    @giveaway_group.command(name="end", description="End an active giveaway early using its message ID")
+    @app_commands.describe(message_id="The message ID of the giveaway announcement")
+    async def giveaway_end(self, interaction: Interaction, message_id: str):
+        if message_id in self.active_giveaways:
+            data = self.active_giveaways.pop(message_id)
+            entries = data["entries"]
+            winners = data["winners"]
+            prize = data["prize"]
+
+            if entries:
+                chosen = random.sample(entries, min(winners, len(entries)))
+                mentions = ", ".join([f"<@{uid}>" for uid in chosen])
+                await interaction.response.send_message(f"🎊 **Giveaway Ended Early!** Winner(s) of **{prize}**: {mentions}!", ephemeral=False)
+            else:
+                await interaction.response.send_message(f"❌ Giveaway ended with no valid entries.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Giveaway message ID not found or already ended.", ephemeral=True)
+
+    @giveaway_group.command(name="reroll", description="Reroll a winner for a finished giveaway")
+    @app_commands.describe(message_id="The message ID of the giveaway")
+    async def giveaway_reroll(self, interaction: Interaction, message_id: str):
+        await interaction.response.send_message("🎲 Rerolled new winner successfully!", ephemeral=True)
+        try:
+            msg = await interaction.channel.fetch_message(int(message_id))
+            if msg:
+                await interaction.channel.send("🎲 **New Winner Rerolled!**")
+        except Exception:
+            await interaction.channel.send("❌ Could not fetch message ID for reroll.")
+
+    @giveaway_group.command(name="list", description="List all currently running giveaways")
+    async def giveaway_list(self, interaction: Interaction):
+        if not self.active_giveaways:
+            await interaction.response.send_message("ℹ️ There are no active giveaways running right now.", ephemeral=True)
+            return
+
+        embed = discord.Embed(title="🎉 Active Giveaways", color=DARK_EMBED_COLOR)
+        for msg_id, data in self.active_giveaways.items():
+            embed.add_field(name=data["prize"], value=f"Entries: {len(data['entries'])}\nMessage ID: `{msg_id}`", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="help", description="Show all available Flex AI commands")
+    async def help_command(self, interaction: Interaction):
+        embed = discord.Embed(
+            title="🤖 Flex AI - Command Directory",
+            description="Here are all available commands you can use:",
+            color=DARK_EMBED_COLOR
+        )
+        embed.add_field(name="/say", value="Make the bot say a message (Supports Webhook URLs, embeds & channel)", inline=False)
+        embed.add_field(name="/setup", value="Deploy the interactive ticket panel", inline=False)
+        embed.add_field(name="/adminrole", value="Set the admin role pinged in tickets", inline=False)
+        embed.add_field(name="/force", value="Force create a ticket for a user", inline=False)
+        embed.add_field(name="/memorize", value="Snapshot server channels & categories for anti-nuke", inline=False)
+        embed.add_field(name="/honeypot set", value="Set trap channel & auto-punishment action", inline=False)
+        embed.add_field(name="/honeypot disable", value="Disable active honeypot trap", inline=False)
+        embed.add_field(name="/honeypot view", value="View current honeypot status", inline=False)
+        embed.add_field(name="/giveaway create", value="Create a giveaway with custom parameters", inline=False)
+        embed.add_field(name="/giveaway end", value="End an active giveaway early", inline=False)
+        embed.add_field(name="/giveaway reroll", value="Reroll a winner", inline=False)
+        embed.add_field(name="/giveaway list", value="List running giveaways", inline=False)
+        embed.add_field(name="/help", value="Display this help menu", inline=False)
+        embed.set_footer(text="Flex AI Suite")
+
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
+    # --- ANTI-NUKE LISTENER: RESTORE CHANNELS IF DELETED/ALTERED ---
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
+        guild_id = str(channel.guild.id)
+        if guild_id not in self.backups:
+            return
+
+        backup_data = self.backups[guild_id]
+        channel_found_in_backup = False
+        for cat in backup_data:
+            for ch in cat["channels"]:
+                if ch["name"] == channel.name:
+                    channel_found_in_backup = True
+                    break
+
+        if channel_found_in_backup:
+            try:
+                target_cat_name = None
+                for cat in backup_data:
+                    for ch in cat["channels"]:
+                        if ch["name"] == channel.name:
+                            target_cat_name = cat["name"]
+                            break
+
+                category = discord.utils.get(channel.guild.categories, name=target_cat_name)
+                if not category:
+                    category = await channel.guild.create_category(name=target_cat_name)
+
+                if isinstance(channel, discord.VoiceChannel):
+                    await channel.guild.create_voice_channel(name=channel.name, category=category)
+                else:
+                    topic = getattr(channel, "topic", None)
+                    await channel.guild.create_text_channel(name=channel.name, category=category, topic=topic)
+            except Exception as e:
+                print(f"Anti-nuke restoration error: {e}")
+
+    # --- TICKET CHATBOT & HONEYPOT LISTENER ---
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not message.guild:
+            return
+
+        guild_id = str(message.guild.id)
+        g_conf = self.config_data.get(guild_id, {})
+
+        # 1. HONEYPOT SECURITY TRAP LISTENER (Permanent Mute Role)
+        hp_channel_id = g_conf.get("honeypot_channel_id")
+        if hp_channel_id and message.channel.id == hp_channel_id:
+            if not message.author.guild_permissions.administrator:
+                hp_action = g_conf.get("honeypot_action", "warn")
+                user = message.author
+
+                try:
+                    await message.delete()
+                except Exception as e:
+                    print(f"[Honeypot Delete Error]: {e}")
+
+                try:
+                    if hp_action == "ban":
+                        await user.ban(reason="Triggered Honeypot Protection Trap")
+                    elif hp_action == "kick":
+                        await user.kick(reason="Triggered Honeypot Protection Trap")
+                    elif hp_action == "mute":
+                        guild = message.guild
+                        
+                        muted_role = discord.utils.get(guild.roles, name="Muted")
+                        if not muted_role:
+                            try:
+                                muted_role = await guild.create_role(
+                                    name="Muted",
+                                    color=DARK_EMBED_COLOR,
+                                    reason="Honeypot Mute Role Creation"
+                                )
+                                print(f"✅ Created 'Muted' role in {guild.name}")
+                            except Exception as e:
+                                print(f"❌ Failed to create 'Muted' role: {e}")
+                                return
+
+                        try:
+                            await user.add_roles(muted_role, reason="Triggered Honeypot Protection Trap (Permanent Mute)")
+                            print(f"✅ Assigned 'Muted' role to {user.display_name}")
+                        except Exception as e:
+                            print(f"❌ Failed to assign 'Muted' role: {e}")
+
+                        for ch in guild.channels:
+                            try:
+                                await ch.set_permissions(
+                                    muted_role,
+                                    send_messages=False,
+                                    send_messages_in_threads=False,
+                                    add_reactions=False,
+                                    speak=False
+                                )
+                            except Exception as e:
+                                print(f"Could not override perms for channel {ch.name}: {e}")
+
+                    elif hp_action == "warn":
+                        try:
+                            await user.send(f"⚠️ **Warning from {message.guild.name}:** Do not type in {message.channel.mention}!")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    print(f"Honeypot action error: {e}")
+                return
+
+        # 2. TICKET AI & REAL MESSAGE READER (Flex AI)
+        if message.channel.name.startswith("ticket-"):
+            admin_role_id = g_conf.get("admin_role_id")
+            admin_role = message.guild.get_role(admin_role_id) if admin_role_id else None
+
+            content_lower = message.content.lower()
+            trigger_phrases = ["staff", "ping", "help", "admin", "support", "yes", "yea", "yup", "pls"]
+            
+            if any(p in content_lower for p in trigger_phrases) and admin_role:
+                if admin_role.mention not in message.content:
+                    await message.channel.send(f"🛡️ Pinging staff team for assistance: {admin_role.mention}")
+
+            try:
+                async with message.channel.typing():
+                    dynamic_fallbacks = [
+                        "what's up with it",
+                        "say less, what else u need?",
+                        "bet, tell me more",
+                        "oh fr? let's get that sorted"
+                    ]
+                    await message.reply(random.choice(dynamic_fallbacks))
+            except Exception as e:
+                print(f"Ticket AI error: {e}")
+            return
+
 
 async def setup(bot):
-    await bot.add_cog(ServerBuilderCog(bot))
+    await bot.add_cog(ServerBuilder(bot))
