@@ -1,14 +1,14 @@
 import discord
 from discord.ext import commands
 import asyncio
-from config import TOKEN # Make sure your bot token is in config.py
+from config import TOKEN
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="*", intents=intents)
+bot = commands.Bot(command_prefix=",,", intents=intents)
 
 @bot.event
 async def on_ready():
@@ -16,8 +16,8 @@ async def on_ready():
         await bot.tree.sync()
         print(f" Synced slash commands successfully!")
     except Exception as e:
-        print(f"❌ Failed to sync commands: {e}")
-    print(f" Logged in as {bot.user} (ID: {bot.user.id})")
+        print(f" Failed to sync commands: {e}")
+    print(f" Logged in as Flex Utilities ({bot.user.name} | ID: {bot.user.id})")
 
 async def main():
     async with bot:
@@ -25,4 +25,4 @@ async def main():
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
-    async asyncio.run(main())
+    asyncio.run(main())
