@@ -9,7 +9,7 @@ import os
 import aiohttp
 from datetime import datetime
 
-PREFIX = "*"
+PREFIX = ",,"
 CONFIG_FILE = "sniper_config.json"
 BACKUP_FILE = "server_backups.json"
 
@@ -85,7 +85,7 @@ class TicketActionView(ui.View):
                     value=f"• **Closed By:** {closed_by.mention}\n• **Close Date:** {close_time_str}\n• **Close Reason:** No further action required.",
                     inline=False
                 )
-                dm_embed.set_footer(text="Flex AI • Ticketing System")
+                dm_embed.set_footer(text="Flex Utilities • Ticketing System")
                 await creator.send(embed=dm_embed)
         except Exception as e:
             print(f"Could not send close DM: {e}")
@@ -194,7 +194,7 @@ class ServerBuilder(commands.Cog):
             description=f"Welcome, {user.mention}! A staff member will join shortly.\n\nFeel free to describe your issue in detail while you wait. The more context, the faster we can help.",
             color=DARK_EMBED_COLOR
         )
-        embed_main.set_footer(text="Flex AI")
+        embed_main.set_footer(text="Flex Utilities")
 
         view = TicketActionView(self, creator_id=user.id, open_time_str=open_time_str, panel_name=panel_name)
         await ticket_channel.send(content=ping_mentions, embed=embed_main, view=view)
@@ -205,7 +205,7 @@ class ServerBuilder(commands.Cog):
                 description=f"{forced_by.mention} created this ticket for {user.mention}.",
                 color=DARK_EMBED_COLOR
             )
-            embed_force.set_footer(text=f"Flex AI • {panel_name}")
+            embed_force.set_footer(text=f"Flex Utilities • {panel_name}")
             await ticket_channel.send(embed=embed_force)
 
         if interaction:
@@ -241,7 +241,7 @@ class ServerBuilder(commands.Cog):
                 if embed:
                     payload["embeds"] = [{
                         "description": message,
-                        "color": int("595b5c", 16)  # Hex #595b5c as integer
+                        "color": int("595b5c", 16)
                     }]
                 else:
                     payload["content"] = message
@@ -535,10 +535,10 @@ class ServerBuilder(commands.Cog):
             embed.add_field(name=data["prize"], value=f"Entries: {len(data['entries'])}\nMessage ID: `{msg_id}`", inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="help", description="Show all available Flex AI commands")
+    @app_commands.command(name="help", description="Show all available Flex Utilities commands")
     async def help_command(self, interaction: Interaction):
         embed = discord.Embed(
-            title="🤖 Flex AI - Command Directory",
+            title="🤖 Flex Utilities - Command Directory",
             description="Here are all available commands you can use:",
             color=DARK_EMBED_COLOR
         )
@@ -555,7 +555,7 @@ class ServerBuilder(commands.Cog):
         embed.add_field(name="/giveaway reroll", value="Reroll a winner", inline=False)
         embed.add_field(name="/giveaway list", value="List running giveaways", inline=False)
         embed.add_field(name="/help", value="Display this help menu", inline=False)
-        embed.set_footer(text="Flex AI Suite")
+        embed.set_footer(text="Flex Utilities Suite")
 
         await interaction.response.send_message(embed=embed, ephemeral=False)
 
@@ -664,7 +664,7 @@ class ServerBuilder(commands.Cog):
                     print(f"Honeypot action error: {e}")
                 return
 
-        # 2. TICKET AI & REAL MESSAGE READER (Flex AI)
+        # 2. TICKET READER
         if message.channel.name.startswith("ticket-"):
             admin_role_id = g_conf.get("admin_role_id")
             admin_role = message.guild.get_role(admin_role_id) if admin_role_id else None
@@ -675,18 +675,6 @@ class ServerBuilder(commands.Cog):
             if any(p in content_lower for p in trigger_phrases) and admin_role:
                 if admin_role.mention not in message.content:
                     await message.channel.send(f"🛡️ Pinging staff team for assistance: {admin_role.mention}")
-
-            try:
-                async with message.channel.typing():
-                    dynamic_fallbacks = [
-                        "what's up with it",
-                        "say less, what else u need?",
-                        "bet, tell me more",
-                        "oh fr? let's get that sorted"
-                    ]
-                    await message.reply(random.choice(dynamic_fallbacks))
-            except Exception as e:
-                print(f"Ticket AI error: {e}")
             return
 
 
