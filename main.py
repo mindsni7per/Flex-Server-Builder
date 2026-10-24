@@ -1,36 +1,28 @@
 import discord
 from discord.ext import commands
 import asyncio
-from config import DISCORD_TOKEN
-from database import Database
+from config import TOKEN # Make sure your bot token is in config.py
 
 intents = discord.Intents.default()
-intents.guilds = True
 intents.message_content = True
+intents.guilds = True
+intents.members = True
 
-class FlexBot(commands.Bot):
-    def __init__(self):
-        super().__init__(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="*", intents=intents)
 
-    async def setup_hook(self):
-        # Initialize SQLite DB
-        await Database.init_db()
+@bot.event
+async def on_ready():
+    try:
+        await bot.tree.sync()
+        print(f" Synced slash commands successfully!")
+    except Exception as e:
+        print(f"❌ Failed to sync commands: {e}")
+    print(f" Logged in as {bot.user} (ID: {bot.user.id})")
 
-        # Load Server Builder cog
-        await self.load_extension("cogs.server_builder")
-        
-        # Sync slash commands globally
-        print("Syncing slash commands...")
-        await self.tree.sync()
-
-    async def on_ready(self):
-        print(f"Logged in as {self.user} (ID: {self.user.id})")
-        print("Flex is online and ready!")
-
-bot = FlexBot()
+async def main():
+    async with bot:
+        await bot.load_extension("cogs.server_builder")
+        await bot.start(TOKEN)
 
 if __name__ == "__main__":
-    if DISCORD_TOKEN == "YOUR_DISCORD_BOT_TOKEN":
-        print("Please configure your DISCORD_TOKEN in config.py or a .env file.")
-    else:
-        bot.run(DISCORD_TOKEN)
+    async asyncio.run(main())
