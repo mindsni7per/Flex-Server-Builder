@@ -1,9 +1,36 @@
-{
-  "123456789012345678": {
-    "ticket_counter": 5,
-    "ticket_category_id": 987654321098765432,
-    "admin_role_id": 112233445566778899,
-    "honeypot_channel_id": 556677889900112233,
-    "honeypot_action": "mute"
-  }
-}
+"""
+Standardized formatters and fallback responses for Flex Utilities.
+"""
+
+import discord
+
+THEME_COLOR = discord.Color.from_str("#111111")
+
+
+def build_success_embed(title: str, description: str) -> discord.Embed:
+    """Builds a standard success embed."""
+    embed = discord.Embed(
+        title=title,
+        description=description,
+        color=THEME_COLOR
+    )
+    embed.set_footer(text="Flex Utilities Execution Engine")
+    return embed
+
+
+def build_error_embed(title: str, description: str) -> discord.Embed:
+    """Builds a standard error embed."""
+    embed = discord.Embed(
+        title=f"Error: {title}",
+        description=description,
+        color=THEME_COLOR
+    )
+    embed.set_footer(text="Flex Utilities System Warning")
+    return embed
+
+
+# Fallback ticket message when Groq API is unavailable
+DEFAULT_TICKET_FALLBACK_RESPONSE = (
+    "Thank you for contacting support. Your message has been received, "
+    "and a staff member will review your request shortly."
+)
