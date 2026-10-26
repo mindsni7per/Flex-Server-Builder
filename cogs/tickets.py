@@ -2,7 +2,11 @@ import discord
 from discord.ext import commands
 import asyncio
 import os
+from groq import Groq
+from config import GROQ_API_KEY
+from prompt import TICKET_AI_SYSTEM_PROMPT
 
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 THEME_COLOR = discord.Color.from_str("#111111")
 
 class TicketActionView(discord.ui.View):
@@ -113,6 +117,44 @@ class Tickets(commands.Cog):
             f.write("\n".join(messages))
         await ctx.send("Transcript Generated:", file=discord.File(filename))
         os.remove(filename)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Handles non-blocking Groq AI responses inside support tickets."""
+        if message.author.bot or not message.guild:
+            return
+
+        if message.channel.name.startswith("ticket-"):
+            if not groq_client:
+                return
+
+            try:
+                async with message.channel.typing():
+                    def get_groq_reply():
+                        completion = groq_client.chat.completions.create(
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": TICKET_AI_SYSTEM_PROMPT
+                                },
+                                {
+                                    "role": "user",
+                                    "content": message.content
+                                }
+                            ],
+                            model="llama-3.1-70b-versatile",
+                            temperature=0.3,
+                            max_tokens=80
+                        )
+                        return completion.choices[0].message.content.strip()
+
+                    response_text = await asyncio.to_thread(get_groq_reply)
+                    if response_text:
+                        await message.reply(response_text)
+                    else:
+                        await message.reply("Thank you for your message. A staff member will review your request shortly.")
+            except Exception as e:
+                print(f"Groq API Execution Error: {e}")
 
 async def setup(bot):
     await bot.add_cog(Tickets(bot))
